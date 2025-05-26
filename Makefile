@@ -1,5 +1,9 @@
-# Executa o aplicativo principal
+# Executa apenas o dashboard Streamlit
 run:
+	source .venv/bin/activate && PYTHONPATH=$(PWD) streamlit run src/app.py
+
+# Executa o sistema completo (MQTT + Streamlit)
+run-full:
 	source .venv/bin/activate && python src/run.py
 
 setup_db:

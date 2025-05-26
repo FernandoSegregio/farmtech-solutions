@@ -1,0 +1,9 @@
+{
+  "topic_arn": "arn:aws:sns:us-east-2:194722428983:AlertasFarmTech",
+  "subscriptions": {
+    "segregio@gmail.com": {
+      "arn": "arn:aws:sns:us-east-2:194722428983:AlertasFarmTech:808c76ae-9404-4ad8-b55b-6a40e1e5883f",
+      "status": "Confirmado"
+    }
+  }
+}

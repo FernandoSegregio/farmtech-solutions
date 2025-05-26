@@ -1,0 +1,3 @@
+"""
+Log module initialization
+""" 

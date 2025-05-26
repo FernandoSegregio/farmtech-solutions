@@ -76,9 +76,23 @@ void reconnect() {
     Serial.print("Tentando conectar ao MQTT...");
     espClient.setInsecure();
 
-    if (client.connect("ESP32Client", mqtt_user, mqtt_password)) {
+    // Tenta conectar com Last Will Testament
+    String willTopic = "sensor/status";
+    String willMessage = "{\"device\":\"ESP32\",\"status\":\"offline\"}";
+    
+    if (client.connect("ESP32Client", mqtt_user, mqtt_password,
+                      willTopic.c_str(), 1, true, willMessage.c_str())) {
       Serial.println("Conectado ao broker MQTT!");
-      client.subscribe(pump_topic);
+      
+      // Publica mensagem de status online
+      String statusMessage = "{\"device\":\"ESP32\",\"status\":\"online\"}";
+      client.publish(willTopic.c_str(), statusMessage.c_str(), true);
+      
+      // Inscreve nos tópicos com QoS 1
+      client.subscribe(pump_topic, 1);
+      client.subscribe(humidity_topic, 1);
+      client.subscribe(temperature_topic, 1);
+      client.subscribe(ph_sensor, 1);
     } else {
       Serial.print("Falha na conexão, rc=");
       Serial.print(client.state());
@@ -103,10 +117,10 @@ String getCurrentDate() {
 String getCurrentTime() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    return "00:00"; // Hora padrão em caso de erro
+    return "00:00:00"; // Hora padrão em caso de erro
   }
-  char buffer[6];
-  strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
+  char buffer[9];
+  strftime(buffer, sizeof(buffer), "%H:%M:%S", &timeinfo);
   return String(buffer);
 }
 
@@ -119,8 +133,12 @@ void sendHumidityDataToMQTT() {
   payload += "\"Valor\":" + String(lastHumidity);
   payload += "}";
 
-  client.publish(humidity_topic, payload.c_str());
   Serial.println("Enviado para MQTT: " + payload);
+  if (client.publish(humidity_topic, payload.c_str(), true)) {  // true para retenção
+    Serial.println("Mensagem publicada com sucesso");
+  } else {
+    Serial.println("Falha ao publicar mensagem");
+  }
 }
 
 // Função para enviar dados de temperatura para o MQTT
@@ -132,8 +150,12 @@ void sendTemperatureDataToMQTT() {
   payload += "\"Valor\":" + String(lastTemperature);
   payload += "}";
 
-  client.publish(temperature_topic, payload.c_str());
   Serial.println("Enviado para MQTT: " + payload);
+  if (client.publish(temperature_topic, payload.c_str(), true)) {  // true para retenção
+    Serial.println("Mensagem publicada com sucesso");
+  } else {
+    Serial.println("Falha ao publicar mensagem");
+  }
 }
 
 // Função para enviar dados de pH para o MQTT
@@ -145,8 +167,12 @@ void sendPHDataToMQTT() {
   payload += "\"Valor\":" + String(lastPH);
   payload += "}";
 
-  client.publish(ph_sensor, payload.c_str());
   Serial.println("Enviado para MQTT: " + payload);
+  if (client.publish(ph_sensor, payload.c_str(), true)) {  // true para retenção
+    Serial.println("Mensagem publicada com sucesso");
+  } else {
+    Serial.println("Falha ao publicar mensagem");
+  }
 }
 
 // Função de callback para mensagens MQTT
@@ -242,6 +268,11 @@ void setup() {
 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+  client.setBufferSize(512); // Aumenta o buffer para mensagens maiores
+  
+  // Configura QoS 1 para garantir entrega
+  client.setSocketTimeout(10);  // timeout de 10 segundos
+  client.setKeepAlive(60);      // keepalive de 60 segundos
 
   reconnect();
 

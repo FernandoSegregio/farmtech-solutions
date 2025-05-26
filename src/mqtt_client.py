@@ -6,6 +6,9 @@ import json
 from dotenv import load_dotenv
 from datetime import datetime
 import streamlit as st
+from fase5.alerts import AlertSystem
+import time
+import logging
 
 # Configurações do HiveMQ Cloud
 mqtt_server = "91c5f1ea0f494ccebe45208ea8ffceff.s1.eu.hivemq.cloud"
@@ -15,6 +18,7 @@ mqtt_password = "Pato1234"
 
 # Tópicos MQTT
 humidity_topic = "sensor/umidade"
+temperature_topic = "sensor/temperatura"
 pump_topic = "sensor/bomba"
 ph_sensor = "sensor/ph"
 k_button_topic = "sensor/potassio"
@@ -26,24 +30,35 @@ db_user = os.getenv('DB_USER') or st.secrets["database"]["user"]
 db_password = os.getenv('DB_PASSWORD') or st.secrets["database"]["password"] 
 db_dsn = os.getenv('DB_DSN') or st.secrets["database"]["dsn"]
 
-# Função para conectar ao banco de dados Oracle
+# Configuração de logging
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/mqtt.log'),
+        logging.StreamHandler()  # Também mostra no console
+    ]
+)
+
 def conectar_banco():
     try:
         conn = oracledb.connect(user=db_user, password=db_password, dsn=db_dsn)
-        print("Conectado ao banco de dados Oracle.")
+        logging.info("Conectado ao banco de dados Oracle.")
         return conn
     except oracledb.DatabaseError as e:
-        print(f"Erro ao conectar ao banco de dados: {e}")
+        logging.error(f"Erro ao conectar ao banco de dados: {e}")
         return None
 
-# Função para garantir que o sensor existe na tabela
 def verificar_ou_inserir_sensor_umidade(conn, id_sensor):
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM sensor_umidade WHERE id_sensor_umidade = :id_sensor", {'id_sensor': id_sensor})
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO sensor_umidade (id_sensor_umidade) VALUES (:id_sensor)", {'id_sensor': id_sensor})
         conn.commit()
-        print(f"Sensor de umidade {id_sensor} inserido com sucesso.")
+        logging.info(f"Sensor de umidade {id_sensor} inserido com sucesso.")
     cursor.close()
 
 def verificar_ou_inserir_sensor_ph(conn, id_sensor):
@@ -52,17 +67,19 @@ def verificar_ou_inserir_sensor_ph(conn, id_sensor):
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO sensor_ph (id_sensor_ph) VALUES (:id_sensor)", {'id_sensor': id_sensor})
         conn.commit()
-        print(f"Sensor de pH {id_sensor} inserido com sucesso.")
+        logging.info(f"Sensor de pH {id_sensor} inserido com sucesso.")
     cursor.close()
 
-# Função para inserir leitura de umidade
 def inserir_leitura_umidade(conn, id_sensor, data_leitura, hora_leitura, valor_umidade):
     verificar_ou_inserir_sensor_umidade(conn, id_sensor)
     cursor = conn.cursor()
     try:
-        # Combine data e hora em um único objeto datetime
-        data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}", '%Y-%m-%d %H:%M')
-
+        # Tenta primeiro com formato HH:MM:SS, depois HH:MM
+        try:
+            data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}", '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}:00", '%Y-%m-%d %H:%M:%S')
+        
         umidade_formatada = round(float(valor_umidade), 2)
 
         cursor.execute("""
@@ -77,21 +94,23 @@ def inserir_leitura_umidade(conn, id_sensor, data_leitura, hora_leitura, valor_u
             'valor_umidade': umidade_formatada
         })
         conn.commit()
-        print(f"Leitura de umidade inserida com sucesso: {umidade_formatada}%")
-    except oracledb.DatabaseError as e:
-        print(f"Erro ao inserir dados de umidade: {e}")
+        logging.info(f"✅ Leitura de umidade inserida: {umidade_formatada}%")
+    except Exception as e:
+        logging.error(f"Erro ao inserir dados de umidade: {e}")
         conn.rollback()
     finally:
         cursor.close()
 
-# Função para inserir leitura de pH
 def inserir_leitura_ph(conn, id_sensor, data_leitura, hora_leitura, ph_equivalente):
     verificar_ou_inserir_sensor_ph(conn, id_sensor)
     cursor = conn.cursor()
     try:
-        # Combine data e hora em um único objeto datetime
-        data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}", '%Y-%m-%d %H:%M')
-
+        # Tenta primeiro com formato HH:MM:SS, depois HH:MM
+        try:
+            data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}", '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            data_hora_leitura = datetime.strptime(f"{data_leitura} {hora_leitura}:00", '%Y-%m-%d %H:%M:%S')
+        
         ph_formatado = round(float(ph_equivalente), 2)
 
         cursor.execute("""
@@ -106,22 +125,25 @@ def inserir_leitura_ph(conn, id_sensor, data_leitura, hora_leitura, ph_equivalen
             'valor_ph': ph_formatado
         })
         conn.commit()
-        print(f"Leitura de pH inserida com sucesso: {ph_formatado}")
-    except oracledb.DatabaseError as e:
-        print(f"Erro ao inserir dados de pH: {e}")
+        logging.info(f"✅ Leitura de pH inserida: {ph_formatado}")
+    except Exception as e:
+        logging.error(f"Erro ao inserir dados de pH: {e}")
         conn.rollback()
     finally:
         cursor.close()
 
-
-
-# Função para inserir leitura de temperatura
 def inserir_leitura_temperatura(conn, id_sensor, data_leitura, hora_leitura, temperatura):
-    verificar_ou_inserir_sensor_umidade(conn, id_sensor)  # Verifica ou insere o sensor
+    verificar_ou_inserir_sensor_umidade(conn, id_sensor)
     cursor = conn.cursor()
     try:
         data_leitura_formatada = datetime.strptime(data_leitura, '%Y-%m-%d').date()
-        hora_leitura_formatada = datetime.strptime(hora_leitura, '%H:%M:%S')
+        
+        # Tenta primeiro com formato HH:MM:SS, depois HH:MM
+        try:
+            hora_leitura_formatada = datetime.strptime(hora_leitura, '%H:%M:%S')
+        except ValueError:
+            hora_leitura_formatada = datetime.strptime(f"{hora_leitura}:00", '%H:%M:%S')
+        
         temperatura_formatada = round(float(temperatura), 2)
 
         cursor.execute("""
@@ -137,80 +159,167 @@ def inserir_leitura_temperatura(conn, id_sensor, data_leitura, hora_leitura, tem
             'limite_maximo': 36.00
         })
         conn.commit()
-        print("Leitura de temperatura inserida com sucesso.")
-    except oracledb.DatabaseError as e:
-        print(f"Erro ao inserir dados de temperatura: {e}")
+        logging.info(f"✅ Leitura de temperatura inserida: {temperatura_formatada}°C")
+    except Exception as e:
+        logging.error(f"Erro ao inserir dados de temperatura: {e}")
         conn.rollback()
     finally:
         cursor.close()
 
-# Função para inserir leitura do sensor de pH
-# Callback para conexão
 def on_connect(client, userdata, flags, rc):
-    print(f"Conectado com código de resultado {rc}")
-    client.subscribe(humidity_topic)
-    client.subscribe(ph_sensor)
-    client.subscribe(k_button_topic)
-    client.subscribe(p_button_topic)
+    if rc == 0:
+        print("🟢 CONECTADO AO BROKER MQTT COM SUCESSO!")
+        logging.info("🟢 Conectado ao broker MQTT com sucesso!")
+        
+        # Inscreve em todos os tópicos
+        topics = [
+            (humidity_topic, 1),  # sensor/umidade - onde o ESP32 está enviando tudo
+            (temperature_topic, 1),
+            (ph_sensor, 1),
+            (pump_topic, 1),
+            (k_button_topic, 1),
+            (p_button_topic, 1),
+            ("sensor/status", 1),
+            ("sensor/+", 1)  # Wildcard para capturar qualquer tópico sensor/*
+        ]
+        
+        for topic, qos in topics:
+            result = client.subscribe(topic, qos)
+            print(f"📡 INSCRITO NO TÓPICO: {topic} (QoS: {qos})")
+            logging.info(f"📡 Inscrito no tópico: {topic} (QoS: {qos}) - Resultado: {result}")
+            
+        print("🎯 AGUARDANDO MENSAGENS...")
+            
+    else:
+        print(f"❌ FALHA NA CONEXÃO MQTT. CÓDIGO: {rc}")
+        logging.error(f"❌ Falha na conexão MQTT. Código: {rc}")
 
-# Callback para mensagens recebidas
 def on_message(client, userdata, msg):
     try:
-        payload = json.loads(msg.payload.decode())
-        print(f"Mensagem recebida: {msg.topic} - {payload}")
+        topic = msg.topic
+        payload_str = msg.payload.decode()
         
+        # CONSOLE LOG DESTACADO
+        print("=" * 60)
+        print(f"🚨 MENSAGEM MQTT RECEBIDA!")
+        print(f"📍 TÓPICO: {topic}")
+        print(f"📦 PAYLOAD: {payload_str}")
+        print("=" * 60)
+        
+        logging.info(f"📨 Mensagem recebida no tópico '{topic}': {payload_str}")
+        
+        # Trata mensagens da bomba que não são JSON
+        if topic == pump_topic:
+            print(f"💧 COMANDO DA BOMBA: {payload_str}")
+            logging.info(f"💧 Comando da bomba: {payload_str}")
+            return
+        
+        # Tenta fazer parse do JSON apenas para outros tópicos
+        try:
+            payload = json.loads(payload_str)
+        except json.JSONDecodeError:
+            print(f"⚠️ PAYLOAD NÃO É JSON VÁLIDO: {payload_str}")
+            logging.warning(f"⚠️ Payload não é JSON válido: {payload_str}")
+            return
+        
+        # Verifica se é uma mensagem de status
+        if topic == "sensor/status":
+            print(f"📊 STATUS DO DISPOSITIVO: {payload['status']}")
+            logging.info(f"📊 Status do dispositivo: {payload['status']}")
+            return
+            
         conn = conectar_banco()
         if conn:
-            if msg.topic == humidity_topic:
-                # Mapear campos recebidos para os esperados
+            try:
+                # Processa baseado no ID do sensor, não no tópico
                 id_sensor = payload.get("id_sensor")
-                data_leitura = payload.get("DATA_LEITURA") or payload.get("data_leitura")
-                hora_leitura = payload.get("HORA_LEITURA") or payload.get("hora_leitura")
-                umidade = payload.get("Valor")
+                data_leitura = payload.get("data_leitura")
+                hora_leitura = payload.get("hora_leitura")
+                valor = payload.get("Valor")
 
-                if id_sensor and data_leitura and hora_leitura and umidade:
-                    inserir_leitura_umidade(conn, id_sensor, data_leitura, hora_leitura, umidade)
-
-                    # Lógica para controle da bomba
-                    if float(umidade) > 50:
-                        client.publish(pump_topic, "OFF")
-                        print("Umidade alta, enviando 'OFF' para o tópico da bomba.")
+                if all([id_sensor, data_leitura, hora_leitura, valor]):
+                    # ID 1 = Umidade
+                    if id_sensor == 1:
+                        print(f"💧 PROCESSANDO UMIDADE: {valor}%")
+                        inserir_leitura_umidade(conn, id_sensor, data_leitura, hora_leitura, valor)
+                        
+                        # Controle da bomba
+                        umidade_float = float(valor)
+                        if umidade_float > 50:
+                            client.publish(pump_topic, "OFF", qos=1, retain=True)
+                            print("💧 BOMBA DESLIGADA - Umidade alta")
+                            logging.info("💧 Bomba DESLIGADA - Umidade alta")
+                        else:
+                            client.publish(pump_topic, "ON", qos=1, retain=True)
+                            print("💧 BOMBA LIGADA - Umidade baixa")
+                            logging.info("💧 Bomba LIGADA - Umidade baixa")
+                    
+                    # ID 2 = Temperatura
+                    elif id_sensor == 2:
+                        print(f"🌡️ PROCESSANDO TEMPERATURA: {valor}°C")
+                        inserir_leitura_temperatura(conn, id_sensor, data_leitura, hora_leitura, valor)
+                    
+                    # ID 3 = pH
+                    elif id_sensor == 3:
+                        print(f"🧪 PROCESSANDO PH: {valor}")
+                        inserir_leitura_ph(conn, id_sensor, data_leitura, hora_leitura, valor)
+                    
                     else:
-                        client.publish(pump_topic, "ON")
-                        print("Umidade baixa, enviando 'ON' para o tópico da bomba.")
-                else:
-                    print("Campos faltando no payload de umidade.")
+                        print(f"⚠️ ID SENSOR DESCONHECIDO: {id_sensor}")
+                        logging.warning(f"⚠️ ID sensor desconhecido: {id_sensor}")
 
-            elif msg.topic == ph_sensor:
-                # Mapear campos recebidos para os esperados
-                id_sensor = payload.get("id_sensor")
-                data_leitura = payload.get("DATA_LEITURA") or payload.get("data_leitura")
-                hora_leitura = payload.get("HORA_LEITURA") or payload.get("hora_leitura")
-                ph_equivalente = payload.get("Valor")
-
-                if id_sensor and data_leitura and hora_leitura and ph_equivalente:
-                    inserir_leitura_ph(conn, id_sensor, data_leitura, hora_leitura, ph_equivalente)
-                else:
-                    print("Campos faltando no payload de pH.")
-
-            conn.close()
-            print("Conexão com o banco de dados encerrada.")
-            
+            finally:
+                conn.close()
+                
     except Exception as e:
-        print(f"Erro ao processar mensagem MQTT: {e}")
+        print(f"❌ ERRO AO PROCESSAR MENSAGEM: {e}")
+        logging.error(f"❌ Erro ao processar mensagem MQTT: {e}")
+        if 'conn' in locals():
+            conn.close()
 
+def on_disconnect(client, userdata, rc):
+    if rc != 0:
+        print(f"⚠️ DESCONECTADO INESPERADAMENTE! CÓDIGO: {rc}")
+        logging.warning(f"⚠️ Desconectado inesperadamente do broker. Código: {rc}")
+    else:
+        print("🔴 DESCONECTADO DO BROKER MQTT")
+        logging.info("🔴 Desconectado do broker MQTT")
 
-# Configuração do cliente MQTT
-client = mqtt.Client()
-client.username_pw_set(mqtt_user, mqtt_password)
-client.on_connect = on_connect
-client.on_message = on_message
+def main():
+    print("🚀 INICIANDO CLIENTE MQTT...")
+    logging.info("🚀 Iniciando cliente MQTT...")
+    
+    # Configuração do cliente MQTT
+    client = mqtt.Client(
+        client_id=f"FarmTech_Client_{int(time.time())}",
+        clean_session=True
+    )
+    
+    client.username_pw_set(mqtt_user, mqtt_password)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.on_disconnect = on_disconnect
+    
+    # Configuração TLS
+    client.tls_set(cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLSv1_2)
+    client.tls_insecure_set(True)
+    
+    try:
+        print(f"🔗 CONECTANDO AO BROKER {mqtt_server}:{mqtt_port}...")
+        logging.info(f"🔗 Conectando ao broker {mqtt_server}:{mqtt_port}...")
+        client.connect(mqtt_server, mqtt_port, keepalive=60)
+        
+        # Inicia o loop
+        client.loop_forever()
+        
+    except KeyboardInterrupt:
+        print("🛑 CLIENTE MQTT ENCERRADO PELO USUÁRIO")
+        logging.info("🛑 Cliente MQTT encerrado pelo usuário")
+        client.disconnect()
+    except Exception as e:
+        print(f"❌ ERRO NO CLIENTE MQTT: {e}")
+        logging.error(f"❌ Erro no cliente MQTT: {e}")
+        client.disconnect()
 
-# Configuração de TLS/SSL
-client.tls_set(cert_reqs=ssl.CERT_NONE)
-
-# Conexão com o broker
-client.connect(mqtt_server, mqtt_port, 60)
-
-# Inicia o loop de processamento
-client.loop_forever()
+if __name__ == "__main__":
+    main()
